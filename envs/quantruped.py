@@ -1,13 +1,12 @@
 import os
 from typing import Tuple
 
-from brax import base
-from brax import math
+import jax
+import mujoco
+from brax import base, math
 from brax.envs.base import PipelineEnv, State
 from brax.io import mjcf
-import jax
 from jax import numpy as jp
-import mujoco
 
 
 class Quantruped(PipelineEnv):
@@ -28,7 +27,7 @@ class Quantruped(PipelineEnv):
         terminate_when_unhealthy=True,
         healthy_z_range=(0.2, 1.0),
         reset_noise_scale=0.1,
-        backend="spring",
+        backend="positional",
         **kwargs,
     ):
         path = os.path.join(

@@ -61,8 +61,8 @@ class Args:
 
     unroll_length: int = 62
 
-    critic_network_width: int = 256
-    actor_network_width: int = 256
+    critic_network_width: int = 64
+    actor_network_width: int = 64
     actor_depth: int = 4
     critic_depth: int = 4
 
@@ -161,7 +161,7 @@ if __name__ == "__main__":
     key, *leg_keys = jax.random.split(key, len(LEG_NAMES) + 1)
 
     def make_env():
-        return Quantruped(backend="spring")
+        return Quantruped(backend="positional")
 
     env = envs.training.wrap(make_env(), episode_length=args.episode_length)
     obs_size = env.observation_size
@@ -533,6 +533,10 @@ if __name__ == "__main__":
     if args.capture_vis:
         def render_policy(training_state, save_path):
             render_env = make_env()
+            render_env = envs.training.EpisodeWrapper(
+                render_env, args.episode_length, action_repeat=1
+            )
+            render_env = envs.training.AutoResetWrapper(render_env)
 
             @jax.jit
             def policy_step(env_state, training_state):

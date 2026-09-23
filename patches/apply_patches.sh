@@ -7,5 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRAX_DIR="$(python -c "import brax, os; print(os.path.dirname(brax.__file__))")"
 
-patch --forward -p1 -d "$BRAX_DIR/.." < "$SCRIPT_DIR/brax_contact_mjx_ncon.patch" \
-  || echo "Patch bereits angewendet oder brax-Version stimmt nicht ueberein - bitte pruefen."
+for p in "$SCRIPT_DIR"/*.patch; do
+  patch --forward -p1 -d "$BRAX_DIR/.." < "$p" \
+    || echo "Patch $p bereits angewendet oder brax-Version stimmt nicht ueberein - bitte pruefen."
+done
