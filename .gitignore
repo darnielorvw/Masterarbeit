@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environment
+venv/
+.venv/
+
+# Training outputs / logs
+runs/
+wandb/
+*.pkl
+*.html
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store

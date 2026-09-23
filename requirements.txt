@@ -1,0 +1,10 @@
+numpy==1.26.4
+jax==0.4.23
+jaxlib==0.4.23
+flax==0.7.4
+tyro
+wandb==0.17.9
+wandb-osh==1.2.2
+brax==0.10.1
+scipy==1.12.0
+mujoco==3.2.6
