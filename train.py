@@ -12,7 +12,6 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import tyro
-import wandb
 import wandb_osh
 from brax import envs
 from brax.io import html
@@ -20,6 +19,7 @@ from etils import epath
 from flax.training.train_state import TrainState
 from wandb_osh.hooks import TriggerWandbSyncHook
 
+import wandb
 from buffer import TrajectoryUniformSamplingQueue
 from envs.quantruped import Quantruped
 from evaluator import CrlEvaluator
@@ -35,7 +35,7 @@ class Args:
     track: bool = True
     wandb_project_name: str = "deep_rl_decentralized_crl"
     wandb_entity: str = ""
-    wandb_mode: str = "offline"
+    wandb_mode: str = "online"
     wandb_dir: str = "."
     wandb_group: str = "."
     capture_vis: bool = True
@@ -45,7 +45,7 @@ class Args:
     episode_length: int = 1000
 
     # Algorithm specific arguments
-    total_env_steps: int = 100000000
+    total_env_steps: int = 100_000_000
     num_epochs: int = 100
     num_envs: int = 512
     num_eval_envs: int = 128
