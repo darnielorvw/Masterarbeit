@@ -63,8 +63,8 @@ class Args:
 
     critic_network_width: int = 64
     actor_network_width: int = 64
-    actor_depth: int = 4
-    critic_depth: int = 4
+    actor_depth: int = 8
+    critic_depth: int = 8
 
     num_sgd_batches_per_training_step: int = 800
 

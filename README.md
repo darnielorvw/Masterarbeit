@@ -113,6 +113,81 @@ Hilfe zu allen verfügbaren Flags: `python train.py --help`
 > Laufzeit aus den obigen Argumenten berechnet und sollten nicht manuell
 > gesetzt werden.
 
+## Actor: Input und Output
+
+Jedes der vier Beine (`FL`, `HL`, `HR`, `FR`) hat einen **eigenen, unabhängigen
+Actor** (kein Parameter-Sharing) — es gibt also vier separate
+Netzwerkinstanzen von `Actor` ([networks.py](networks.py)), die jeweils nur
+lokale Informationen sehen (dezentrale Steuerung).
+
+### Input
+
+Die volle Environment-Observation ist `STATE_DIM (37) + GOAL_DIM (2) = 39`-dimensional
+und wird zunächst in `state` (37-dim, Roboterzustand) und `goal` (2-dim,
+Zielposition x/y) aufgeteilt ([train.py:241-242](train.py#L241-L242)):
+
+```python
+def split_obs(obs):
+    return obs[..., :STATE_DIM], obs[..., STATE_DIM:STATE_DIM + GOAL_DIM]
+```
+
+Pro Bein wird daraus der **lokale Input** zusammengestellt
+([train.py:248](train.py#L248)):
+
+```python
+actor_input = jnp.concatenate([local_state(state, leg), goal], axis=-1)
+```
+
+`local_state(state, leg)` ([leg_topology.py:80-82](leg_topology.py#L80-L82))
+schneidet aus dem 37-dim `state` nur die für dieses Bein relevanten
+31 Dimensionen heraus:
+
+- **Globale Torso-Infos** (13 Dims): xyz-Position, Quaternion, lineare + angulare Geschwindigkeit
+- **Eigenes Bein** (6 Dims): Gelenkwinkel (hip, knee), Gelenkgeschwindigkeiten, letzte Aktion
+- **Beide Nachbarbeine im Ring** `FL↔HL↔HR↔FR↔FL` (2 × 6 = 12 Dims): dieselben drei Größen wie beim eigenen Bein
+
+→ `LOCAL_STATE_DIM = 31` + `GOAL_DIM = 2` = **33-dimensionaler Input** pro
+Actor-Aufruf ([leg_topology.py:59](leg_topology.py#L59)). Ein Bein bekommt
+also nie den globalen Zustand aller vier Beine, sondern nur sich selbst, seine
+zwei Nachbarn und die Torso-/Zielinfos.
+
+### Output
+
+`Actor.__call__` ([networks.py:99-125](networks.py#L99-L125)) gibt für
+`action_size=2` (hip + knee) zwei 2-dimensionale Vektoren zurück:
+
+```python
+mean = nn.Dense(self.action_size, ...)(x)
+log_std = nn.Dense(self.action_size, ...)(x)
+log_std = nn.tanh(log_std)
+log_std = LOG_STD_MIN + 0.5 * (LOG_STD_MAX - LOG_STD_MIN) * (log_std + 1)
+return mean, log_std
+```
+
+Das Netzwerk sagt also **Mittelwert und Log-Standardabweichung** einer
+Gauß-Verteilung über die zwei Gelenk-Aktionen voraus (SAC-artiger stochastischer
+Actor), `log_std` dabei auf `[-5, 2]` geclampt.
+
+Wie daraus die finale Aktion wird, unterscheidet sich zwischen Training und
+Evaluation:
+
+- **Training** ([train.py:271-273](train.py#L271-L273)): es wird aus der
+  Gauß-Verteilung gesampelt und danach durch `tanh` auf `[-1, 1]` gequetscht
+  (reparametrisierter Sample-Trick, Standard bei SAC):
+  ```python
+  actions_per_leg[leg] = nn.tanh(means + stds * jax.random.normal(...))
+  ```
+- **Evaluation/Rendering** ([train.py:249-250](train.py#L249-L250)): es wird
+  deterministisch nur der `tanh`-gequetschte Mittelwert genommen, kein Sampling:
+  ```python
+  actions_per_leg[leg] = nn.tanh(means)
+  ```
+
+Die vier 2-dim Bein-Aktionen werden anschließend über `assemble_action(...)`
+([leg_topology.py:72-76](leg_topology.py#L72-L76)) zu einem **8-dimensionalen
+Aktionsvektor** in der Reihenfolge der `<actuator>`-Einträge im MJCF
+(`FR, FL, HL, HR`) zusammengesetzt und so an `env.step(...)` übergeben.
+
 ## Beispiel: kurzer Testlauf
 
 ```bash
