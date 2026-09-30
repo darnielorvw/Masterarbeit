@@ -41,6 +41,8 @@ class Args:
     capture_vis: bool = True
     vis_length: int = 1000
     checkpoint: bool = True
+    upload_checkpoints: bool = True  # final.pkl + args.pkl am Ende als wandb-Artifact hochladen
+    upload_all_checkpoints: bool = True  # zusaetzlich alle Zwischen-Checkpoints (step_*.pkl) hochladen
 
     episode_length: int = 1000
 
@@ -574,3 +576,30 @@ if __name__ == "__main__":
         with open(f"{save_path}/args.pkl", "wb") as f:
             pickle.dump(args, f)
         print(f"Saved args to {save_path}/args.pkl", flush=True)
+
+    if args.checkpoint and args.track and args.upload_checkpoints:
+        # Checkpoints als wandb-Artifact hochladen, damit man sie ohne laufende
+        # Instanz herunterladen kann (wandb.ai -> Run -> Artifacts).
+        try:
+            artifact = wandb.Artifact(
+                name=f"checkpoints-{wandb.run.id}",
+                type="model",
+                metadata={
+                    "env_steps": int(training_state.env_steps),
+                    "seed": args.seed,
+                    "num_envs": args.num_envs,
+                    "actor_depth": args.actor_depth,
+                    "critic_depth": args.critic_depth,
+                },
+            )
+            artifact.add_file(f"{save_path}/final.pkl")
+            artifact.add_file(f"{save_path}/args.pkl")
+            if args.upload_all_checkpoints:
+                for ckpt in sorted(Path(save_path).glob("step_*.pkl")):
+                    artifact.add_file(str(ckpt))
+            wandb.log_artifact(artifact, aliases=["latest", "final"])
+            print("Uploading checkpoints to wandb ...", flush=True)
+            wandb.finish()  # wartet, bis der Upload abgeschlossen ist
+            print("Checkpoints uploaded to wandb.", flush=True)
+        except Exception as e:
+            print(f"Error uploading checkpoints to wandb: {e}", flush=True)

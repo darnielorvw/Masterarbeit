@@ -13,6 +13,13 @@ set -u
 cd "$(dirname "$0")"
 source venv/bin/activate
 
+# GPU-Check: ohne GPU gar nicht erst starten (sonst laeuft alles langsam auf der CPU)
+if ! python -c "import jax, sys; sys.exit(0 if jax.default_backend() == 'gpu' else 1)" 2>/dev/null; then
+  echo "[run_aws] FEHLER: JAX findet keine GPU – Training wird NICHT gestartet."
+  echo "[run_aws] Pruefen mit: python -c 'import jax; print(jax.devices())'"
+  exit 1
+fi
+
 MAX_HOURS=${MAX_HOURS:-24}
 mkdir -p logs
 LOG="logs/train_$(date +%Y%m%d_%H%M%S).log"
