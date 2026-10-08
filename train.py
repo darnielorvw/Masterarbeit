@@ -43,6 +43,7 @@ class Args:
     checkpoint: bool = True
     upload_checkpoints: bool = True  # final.pkl + args.pkl am Ende als wandb-Artifact hochladen
     upload_all_checkpoints: bool = True  # zusaetzlich alle Zwischen-Checkpoints (step_*.pkl) hochladen
+    best_metric: str = "eval/episode_success"  # Eval-Metrik (maximiert), nach der best.pkl gewaehlt wird
 
     episode_length: int = 1000
 
@@ -141,7 +142,11 @@ if __name__ == "__main__":
         args.total_env_steps - args.num_prefill_env_steps
     ) // (args.num_epochs * args.env_steps_per_actor_step)
 
-    run_name = f"quantruped_local_{args.batch_size}_{args.total_env_steps}_nenvs:{args.num_envs}_{args.seed}"
+    run_name = (
+        f"quantruped_local_c{args.critic_depth}x{args.critic_network_width}"
+        f"_a{args.actor_depth}x{args.actor_network_width}"
+        f"_{args.batch_size}_{args.total_env_steps}_nenvs:{args.num_envs}_{args.seed}"
+    )
     print(f"run_name: {run_name}", flush=True)
 
     if args.track:
@@ -493,6 +498,7 @@ if __name__ == "__main__":
     )
 
     training_walltime = 0
+    best_value, best_epoch, best_env_steps = -np.inf, None, None
     print("starting training....", flush=True)
     start_time = time.time()
     for ne in range(args.num_epochs):
@@ -521,6 +527,17 @@ if __name__ == "__main__":
                 params = checkpoint_params(training_state)
                 path = f"{save_path}/step_{int(training_state.env_steps)}.pkl"
                 save_params(path, params)
+
+            # Best checkpoint: ueberschreiben, sobald die Eval-Metrik mindestens so gut ist wie bisher.
+            value = float(metrics.get(args.best_metric, np.nan))
+            if not np.isnan(value) and value >= best_value:  # bei Gleichstand gewinnt der spaetere
+                best_value, best_epoch, best_env_steps = value, ne, int(training_state.env_steps)
+                save_params(f"{save_path}/best.pkl", checkpoint_params(training_state))
+                print(f"New best {args.best_metric}={value:.4f} in epoch {ne}, saved best.pkl", flush=True)
+                if args.track:
+                    wandb.run.summary["best/value"] = best_value
+                    wandb.run.summary["best/epoch"] = best_epoch
+                    wandb.run.summary["best/env_steps"] = best_env_steps
 
         if args.track:
             wandb.log(metrics, step=ne)
@@ -592,9 +609,17 @@ if __name__ == "__main__":
                     "num_envs": args.num_envs,
                     "actor_depth": args.actor_depth,
                     "critic_depth": args.critic_depth,
+                    "actor_network_width": args.actor_network_width,
+                    "critic_network_width": args.critic_network_width,
+                    "best_metric": args.best_metric,
+                    "best_value": None if best_epoch is None else best_value,
+                    "best_epoch": best_epoch,
+                    "best_env_steps": best_env_steps,
                 },
             )
             artifact.add_file(f"{save_path}/final.pkl")
+            if best_epoch is not None:
+                artifact.add_file(f"{save_path}/best.pkl")
             artifact.add_file(f"{save_path}/args.pkl")
             if args.upload_all_checkpoints:
                 for ckpt in sorted(Path(save_path).glob("step_*.pkl")):

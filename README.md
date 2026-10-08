@@ -1,6 +1,6 @@
 # Deep RL — Decentralized Contrastive RL für Quantruped
 
-Dezentrales Contrastive-RL-Training (unabhängige Actor/Critic/Alpha pro Bein)
+Dezentrales Contrastive-RL-Training (unabhängige Actor/Alpha pro Bein, ein globaler Critic)
 für einen vierbeinigen Roboter (`Quantruped`), implementiert in JAX/Flax mit
 Brax/MuJoCo als Physik-Simulation.
 

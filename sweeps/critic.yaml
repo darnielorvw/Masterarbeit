@@ -1,0 +1,29 @@
+# Stufe 1a: Critic-Groesse (Width x Depth) bei festem Actor (Default 64 x 8).
+# 3 x 3 Konfigurationen x 2 Seeds = 18 Laeufe a 20M Steps (~1h pro Lauf bei 512 Envs auf der T4,
+# grosse Netze langsamer) -> grob 18-30 GPU-Stunden.
+#
+# Anlegen:  wandb sweep sweeps/critic.yaml
+# Starten:  bash run_sweep_aws.sh <entity>/deep_rl_sweep/<sweep_id>
+program: train.py
+project: deep_rl_sweep
+name: critic_width_depth
+method: grid
+metric:
+  name: eval/episode_success
+  goal: maximize
+parameters:
+  critic_network_width: {values: [128, 256, 512]}
+  critic_depth: {values: [4, 8, 16]}  # nur Vielfache von 4 (Residual-Bloecke a 4 Layer)
+  actor_network_width: {value: 64}  # Actor fest (explizit, damit spaetere Default-Aenderungen den Sweep nicht veraendern)
+  actor_depth: {value: 8}
+  seed: {values: [1, 2]}
+  total_env_steps: {value: 20000000}
+  num_envs: {value: 512}
+  wandb_project_name: {value: deep_rl_sweep}
+  wandb_group: {value: critic_width_depth}
+command:
+  - ${env}
+  - python
+  - ${program}
+  - --no-upload-all-checkpoints  # nur final.pkl hochladen, spart wandb-Speicher
+  - ${args}

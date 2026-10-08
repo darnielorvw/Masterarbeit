@@ -1,0 +1,30 @@
+# Stufe 1b: Actor-Groesse (Width x Depth) bei festem Critic.
+# critic_network_width/critic_depth nach Auswertung von sweeps/critic.yaml auf
+# die beste Konfiguration setzen!
+# 3 x 2 Konfigurationen x 2 Seeds = 12 Laeufe a 20M Steps.
+#
+# Anlegen:  wandb sweep sweeps/actor.yaml
+# Starten:  bash run_sweep_aws.sh <entity>/deep_rl_sweep/<sweep_id>
+program: train.py
+project: deep_rl_sweep
+name: actor_width_depth
+method: grid
+metric:
+  name: eval/episode_success
+  goal: maximize
+parameters:
+  actor_network_width: { values: [32, 64, 128, 256] }
+  actor_depth: { values: [4, 8, 16] } # nur Vielfache von 4 (Residual-Bloecke a 4 Layer)
+  critic_network_width: { value: 256 } # TODO: Ergebnis aus critic-Sweep
+  critic_depth: { value: 8 } # TODO: Ergebnis aus critic-Sweep
+  seed: { values: [1, 2] }
+  total_env_steps: { value: 20000000 }
+  num_envs: { value: 512 }
+  wandb_project_name: { value: deep_rl_sweep }
+  wandb_group: { value: actor_width_depth }
+command:
+  - ${env}
+  - python
+  - ${program}
+  - --no-upload-all-checkpoints # nur final.pkl hochladen, spart wandb-Speicher
+  - ${args}
