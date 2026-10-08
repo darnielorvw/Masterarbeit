@@ -31,8 +31,21 @@ Hyperparameter-Sweep (Width x Depth)
 ```bash
 tmux new -s sweep
 cd ~/deep_rl && git pull
-wandb sweep sweeps/critic.yaml               # gibt <entity>/deep_rl_sweep/<sweep_id> aus
+wandb sweep sweeps/actor.yaml               # gibt <entity>/deep_rl_sweep/<sweep_id> aus
 bash run_sweep_aws.sh <entity>/deep_rl_sweep/<sweep_id>
 # parallel auf weiteren Instanzen denselben Befehl starten -> Laeufe werden verteilt
 # danach: beste Critic-Konfig in sweeps/actor.yaml eintragen und dasselbe mit actor.yaml
 ```
+
+````bash
+tmux ls
+tmux kill-session -t sweep
+tmux kill-server
+ #shutdown abbrechen
+sudo shutdown -c
+
+
+```
+
+
+

@@ -1,12 +1,13 @@
-import jax
 import time
-import numpy as np
-import jax.numpy as jnp
-import flax.linen as nn
-
-from brax import envs
-from typing import NamedTuple
 from collections import namedtuple
+from typing import NamedTuple
+
+import flax.linen as nn
+import jax
+import jax.numpy as jnp
+import numpy as np
+from brax import envs
+
 
 def generate_unroll(actor_step, training_state, env, env_state, unroll_length, extra_fields=()):
   """Collect trajectories of given unroll_length."""
@@ -78,8 +79,6 @@ class CrlEvaluator():
           )
 
       metrics["eval/avg_episode_length"] = np.mean(eval_metrics.episode_steps)
-      metrics["eval/epoch_eval_time"] = epoch_eval_time
-      metrics["eval/sps"] = self._steps_per_unroll / epoch_eval_time
       self._eval_walltime = self._eval_walltime + epoch_eval_time
       metrics = {"eval/walltime": self._eval_walltime, **training_metrics, **metrics}
 

@@ -51,7 +51,7 @@ class Args:
     total_env_steps: int = 100_000_000
     num_epochs: int = 100
     num_envs: int = 512
-    num_eval_envs: int = 128
+    num_eval_envs: int = 64
     actor_lr: float = 3e-4
     critic_lr: float = 3e-4
     alpha_lr: float = 3e-4
