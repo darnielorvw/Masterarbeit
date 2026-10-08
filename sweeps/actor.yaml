@@ -13,7 +13,7 @@ metric:
   name: eval/episode_success
   goal: maximize
 parameters:
-  actor_network_width: { values: [32, 64, 128, 256] }
+  actor_network_width: { values: [32, 64, 128] }
   actor_depth: { values: [4, 8, 16] } # nur Vielfache von 4 (Residual-Bloecke a 4 Layer)
   critic_network_width: { value: 256 } # TODO: Ergebnis aus critic-Sweep
   critic_depth: { value: 8 } # TODO: Ergebnis aus critic-Sweep
