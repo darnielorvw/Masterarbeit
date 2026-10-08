@@ -24,7 +24,7 @@ from buffer import TrajectoryUniformSamplingQueue
 from envs.quantruped import Quantruped
 from evaluator import CrlEvaluator
 from leg_topology import (GOAL_DIM, LEG_NAMES, LOCAL_STATE_DIM, STATE_DIM,
-                          assemble_action, local_action, local_state)
+                          assemble_action, local_state)
 from networks import Actor, G_encoder, SA_encoder
 
 
@@ -85,11 +85,10 @@ class Args:
 
 @flax.struct.dataclass
 class LegTrainState:
-    """Independent Actor/Critic/Alpha params for a single decentralized leg
-    controller -- no parameters are shared between legs."""
+    """Independent Actor/Alpha params for a single decentralized leg
+    controller -- no actor parameters are shared between legs."""
 
     actor_state: TrainState
-    critic_state: TrainState
     alpha_state: TrainState
 
 
@@ -98,6 +97,7 @@ class TrainingState:
     env_steps: jnp.ndarray
     gradient_steps: jnp.ndarray
     legs: Dict[str, LegTrainState]
+    critic_state: TrainState  # single global critic over full state + joint action
 
 
 class Transition(NamedTuple):
@@ -106,6 +106,19 @@ class Transition(NamedTuple):
     reward: jnp.ndarray
     discount: jnp.ndarray
     extras: jnp.ndarray = ()
+
+
+def checkpoint_params(training_state: TrainingState):
+    """{leg: (alpha_params, actor_params), "critic": critic_params}"""
+    params = {
+        leg: (
+            training_state.legs[leg].alpha_state.params,
+            training_state.legs[leg].actor_state.params,
+        )
+        for leg in LEG_NAMES
+    }
+    params["critic"] = training_state.critic_state.params
+    return params
 
 
 def save_params(path: str, params: Any):
@@ -160,7 +173,7 @@ if __name__ == "__main__":
     np.random.seed(args.seed)
     key = jax.random.PRNGKey(args.seed)
     key, buffer_key, env_key, eval_env_key = jax.random.split(key, 4)
-    key, *leg_keys = jax.random.split(key, len(LEG_NAMES) + 1)
+    key, critic_key, *leg_keys = jax.random.split(key, len(LEG_NAMES) + 2)
 
     def make_env():
         return Quantruped(backend="positional")
@@ -177,7 +190,7 @@ if __name__ == "__main__":
     eval_env = envs.training.wrap(make_env(), episode_length=args.episode_length)
     eval_env.step = jax.jit(eval_env.step)
 
-    # Network + TrainState setup: one independent Actor/Critic/Alpha per leg.
+    # Network + TrainState setup: one independent Actor/Alpha per leg, one global Critic.
     actor = Actor(action_size=2, network_width=args.actor_network_width, network_depth=args.actor_depth, use_relu=args.use_relu)
     sa_encoder = SA_encoder(network_width=args.critic_network_width, network_depth=args.critic_depth, use_relu=args.use_relu)
     g_encoder = G_encoder(network_width=args.critic_network_width, network_depth=args.critic_depth, use_relu=args.use_relu)
@@ -185,19 +198,11 @@ if __name__ == "__main__":
     target_entropy = -args.entropy_param * 2  # 2 actuators per leg
 
     leg_states = {}
-    for leg, leg_key in zip(LEG_NAMES, leg_keys):
-        actor_key, sa_key, g_key = jax.random.split(leg_key, 3)
+    for leg, actor_key in zip(LEG_NAMES, leg_keys):
         actor_state = TrainState.create(
             apply_fn=actor.apply,
             params=actor.init(actor_key, np.ones([1, LOCAL_STATE_DIM + GOAL_DIM])),
             tx=optax.adam(learning_rate=args.actor_lr),
-        )
-        sa_params = sa_encoder.init(sa_key, np.ones([1, LOCAL_STATE_DIM]), np.ones([1, 2]))
-        g_params = g_encoder.init(g_key, np.ones([1, GOAL_DIM]))
-        critic_state = TrainState.create(
-            apply_fn=None,
-            params={"sa_encoder": sa_params, "g_encoder": g_params},
-            tx=optax.adam(learning_rate=args.critic_lr),
         )
         log_alpha = jnp.asarray(0.0, dtype=jnp.float32)
         alpha_state = TrainState.create(
@@ -205,12 +210,22 @@ if __name__ == "__main__":
             params={"log_alpha": log_alpha},
             tx=optax.adam(learning_rate=args.alpha_lr),
         )
-        leg_states[leg] = LegTrainState(actor_state=actor_state, critic_state=critic_state, alpha_state=alpha_state)
+        leg_states[leg] = LegTrainState(actor_state=actor_state, alpha_state=alpha_state)
+
+    sa_key, g_key = jax.random.split(critic_key)
+    sa_params = sa_encoder.init(sa_key, np.ones([1, STATE_DIM]), np.ones([1, action_size]))
+    g_params = g_encoder.init(g_key, np.ones([1, GOAL_DIM]))
+    critic_state = TrainState.create(
+        apply_fn=None,
+        params={"sa_encoder": sa_params, "g_encoder": g_params},
+        tx=optax.adam(learning_rate=args.critic_lr),
+    )
 
     training_state = TrainingState(
         env_steps=jnp.zeros(()),
         gradient_steps=jnp.zeros(()),
         legs=leg_states,
+        critic_state=critic_state,
     )
 
     # Replay Buffer (shared across legs: stores full observation/action vectors).
@@ -319,50 +334,60 @@ if __name__ == "__main__":
         state = transitions.observation[:, :STATE_DIM]
         future_state = transitions.extras["future_state"]
         goal = future_state[:, 0:GOAL_DIM]
-        keys = jax.random.split(key, len(LEG_NAMES))
+        critic_params = training_state.critic_state.params
+
+        # Joint loss over all leg actors: the joint action is sampled from the
+        # current per-leg policies and scored by the global critic, so each
+        # actor receives the critic gradient through its own action slice.
+        def actor_loss(actor_params, log_alphas, key):
+            keys = jax.random.split(key, len(LEG_NAMES))
+            actions_per_leg = {}
+            log_probs = {}
+            for leg, leg_key in zip(LEG_NAMES, keys):
+                actor_input = jnp.concatenate([local_state(state, leg), goal], axis=1)
+                means, log_stds = actor.apply(actor_params[leg], actor_input)
+                stds = jnp.exp(log_stds)
+                x_ts = means + stds * jax.random.normal(leg_key, shape=means.shape, dtype=means.dtype)
+                leg_action = nn.tanh(x_ts)
+                log_prob = jax.scipy.stats.norm.logpdf(x_ts, loc=means, scale=stds)
+                log_prob -= jnp.log((1 - jnp.square(leg_action)) + 1e-6)
+                actions_per_leg[leg] = leg_action
+                log_probs[leg] = log_prob.sum(-1)
+            action = assemble_action(actions_per_leg)
+
+            sa_repr = sa_encoder.apply(critic_params["sa_encoder"], state, action)
+            g_repr = g_encoder.apply(critic_params["g_encoder"], goal)
+            qf_pi = -jnp.sqrt(jnp.sum((sa_repr - g_repr) ** 2, axis=-1))
+
+            if args.disable_entropy:
+                loss = -jnp.mean(qf_pi)
+            else:
+                entropy_term = sum(jnp.exp(log_alphas[leg]) * log_probs[leg] for leg in LEG_NAMES)
+                loss = jnp.mean(entropy_term - qf_pi)
+            return loss, log_probs
+
+        def alpha_loss(alpha_params, log_prob):
+            alpha = jnp.exp(alpha_params["log_alpha"])
+            return jnp.mean(alpha * jnp.mean(jax.lax.stop_gradient(-log_prob - target_entropy)))
+
+        actor_params = {leg: training_state.legs[leg].actor_state.params for leg in LEG_NAMES}
+        log_alphas = {leg: training_state.legs[leg].alpha_state.params["log_alpha"] for leg in LEG_NAMES}
+        (actorloss, log_probs), actor_grads = jax.value_and_grad(actor_loss, has_aux=True)(
+            actor_params, log_alphas, key
+        )
 
         new_legs = {}
-        metrics = {}
-        for leg, leg_key in zip(LEG_NAMES, keys):
+        metrics = {"actor_loss": actorloss}
+        for leg in LEG_NAMES:
             leg_state = training_state.legs[leg]
-            local_s = local_state(state, leg)
+            new_actor_state = leg_state.actor_state.apply_gradients(grads=actor_grads[leg])
 
-            def actor_loss(actor_params, critic_params, log_alpha, key):
-                actor_input = jnp.concatenate([local_s, goal], axis=1)
-                means, log_stds = actor.apply(actor_params, actor_input)
-                stds = jnp.exp(log_stds)
-                x_ts = means + stds * jax.random.normal(key, shape=means.shape, dtype=means.dtype)
-                action = nn.tanh(x_ts)
-                log_prob = jax.scipy.stats.norm.logpdf(x_ts, loc=means, scale=stds)
-                log_prob -= jnp.log((1 - jnp.square(action)) + 1e-6)
-                log_prob = log_prob.sum(-1)
-
-                sa_repr = sa_encoder.apply(critic_params["sa_encoder"], local_s, action)
-                g_repr = g_encoder.apply(critic_params["g_encoder"], goal)
-                qf_pi = -jnp.sqrt(jnp.sum((sa_repr - g_repr) ** 2, axis=-1))
-
-                if args.disable_entropy:
-                    loss = -jnp.mean(qf_pi)
-                else:
-                    loss = jnp.mean(jnp.exp(log_alpha) * log_prob - qf_pi)
-                return loss, log_prob
-
-            def alpha_loss(alpha_params, log_prob):
-                alpha = jnp.exp(alpha_params["log_alpha"])
-                return jnp.mean(alpha * jnp.mean(jax.lax.stop_gradient(-log_prob - target_entropy)))
-
-            (actorloss, log_prob), actor_grad = jax.value_and_grad(actor_loss, has_aux=True)(
-                leg_state.actor_state.params, leg_state.critic_state.params, leg_state.alpha_state.params["log_alpha"], leg_key
-            )
-            new_actor_state = leg_state.actor_state.apply_gradients(grads=actor_grad)
-
-            alphaloss, alpha_grad = jax.value_and_grad(alpha_loss)(leg_state.alpha_state.params, log_prob)
+            alphaloss, alpha_grad = jax.value_and_grad(alpha_loss)(leg_state.alpha_state.params, log_probs[leg])
             new_alpha_state = leg_state.alpha_state.apply_gradients(grads=alpha_grad)
 
             new_legs[leg] = leg_state.replace(actor_state=new_actor_state, alpha_state=new_alpha_state)
-            metrics[f"{leg}/actor_loss"] = actorloss
             metrics[f"{leg}/alpha_loss"] = alphaloss
-            metrics[f"{leg}/sample_entropy"] = -log_prob
+            metrics[f"{leg}/sample_entropy"] = -log_probs[leg]
 
         training_state = training_state.replace(legs=new_legs)
         return training_state, metrics
@@ -371,32 +396,23 @@ if __name__ == "__main__":
     def update_critic(transitions, training_state, key):
         state = transitions.observation[:, :STATE_DIM]
         goal = transitions.observation[:, STATE_DIM:STATE_DIM + GOAL_DIM]
+        action = transitions.action
 
-        new_legs = {}
-        metrics = {}
-        for leg in LEG_NAMES:
-            leg_state = training_state.legs[leg]
-            local_s = local_state(state, leg)
-            local_a = local_action(transitions.action, leg)
+        def critic_loss(critic_params):
+            sa_repr = sa_encoder.apply(critic_params["sa_encoder"], state, action)
+            g_repr = g_encoder.apply(critic_params["g_encoder"], goal)
 
-            def critic_loss(critic_params):
-                sa_repr = sa_encoder.apply(critic_params["sa_encoder"], local_s, local_a)
-                g_repr = g_encoder.apply(critic_params["g_encoder"], goal)
+            logits = -jnp.sqrt(jnp.sum((sa_repr[:, None, :] - g_repr[None, :, :]) ** 2, axis=-1))
+            loss = -jnp.mean(jnp.diag(logits) - jax.nn.logsumexp(logits, axis=1))
 
-                logits = -jnp.sqrt(jnp.sum((sa_repr[:, None, :] - g_repr[None, :, :]) ** 2, axis=-1))
-                loss = -jnp.mean(jnp.diag(logits) - jax.nn.logsumexp(logits, axis=1))
+            logsumexp = jax.nn.logsumexp(logits + 1e-6, axis=1)
+            loss += args.logsumexp_penalty_coeff * jnp.mean(logsumexp ** 2)
+            return loss, logsumexp
 
-                logsumexp = jax.nn.logsumexp(logits + 1e-6, axis=1)
-                loss += args.logsumexp_penalty_coeff * jnp.mean(logsumexp ** 2)
-                return loss, logsumexp
-
-            (loss, logsumexp), grad = jax.value_and_grad(critic_loss, has_aux=True)(leg_state.critic_state.params)
-            new_critic_state = leg_state.critic_state.apply_gradients(grads=grad)
-            new_legs[leg] = leg_state.replace(critic_state=new_critic_state)
-            metrics[f"{leg}/critic_loss"] = loss
-            metrics[f"{leg}/logsumexp"] = logsumexp.mean()
-
-        training_state = training_state.replace(legs=new_legs)
+        (loss, logsumexp), grad = jax.value_and_grad(critic_loss, has_aux=True)(training_state.critic_state.params)
+        new_critic_state = training_state.critic_state.apply_gradients(grads=grad)
+        training_state = training_state.replace(critic_state=new_critic_state)
+        metrics = {"critic_loss": loss, "logsumexp": logsumexp.mean()}
         return training_state, metrics
 
     @jax.jit
@@ -502,14 +518,7 @@ if __name__ == "__main__":
 
         if args.checkpoint:
             if ne < 5 or ne >= args.num_epochs - 5 or ne % 10 == 0:
-                params = {
-                    leg: (
-                        training_state.legs[leg].alpha_state.params,
-                        training_state.legs[leg].actor_state.params,
-                        training_state.legs[leg].critic_state.params,
-                    )
-                    for leg in LEG_NAMES
-                }
+                params = checkpoint_params(training_state)
                 path = f"{save_path}/step_{int(training_state.env_steps)}.pkl"
                 save_params(path, params)
 
@@ -522,14 +531,7 @@ if __name__ == "__main__":
         print(f"Time elapsed: {hours_passed:.3f} hours", flush=True)
 
     if args.checkpoint:
-        params = {
-            leg: (
-                training_state.legs[leg].alpha_state.params,
-                training_state.legs[leg].actor_state.params,
-                training_state.legs[leg].critic_state.params,
-            )
-            for leg in LEG_NAMES
-        }
+        params = checkpoint_params(training_state)
         save_params(f"{save_path}/final.pkl", params)
 
     if args.capture_vis:

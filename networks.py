@@ -1,6 +1,6 @@
 """Network architecture copied unchanged from scaling-crl/train.py
 (residual MLPs with LayerNorm + Swish, Lecun-uniform init). Instantiated once
-per leg in train.py, each with its own parameters (no sharing between legs)."""
+per leg (Actor) or once globally (SA/G encoders) in train.py."""
 
 import flax.linen as nn
 import jax.numpy as jnp

@@ -12,7 +12,8 @@ Indices below refer to the 37-dim *state* part of the Quantruped observation
   [15:18]  torso linear velocity
   [18:21]  torso angular velocity
   [21:23]  FL qvel   [23:25] HL qvel   [25:27] HR qvel   [27:29] FR qvel
-  [29:31]  FL last_action   [31:33] HL last_action   [33:35] HR last_action   [35:37] FR last_action
+  [29:31]  FR last_action   [31:33] FL last_action   [33:35] HL last_action   [35:37] HR last_action
+           (actuator order, see ACTION_ORDER -- differs from the qpos/qvel joint order)
 The goal channel (target x, y) is appended after these 37 dims and is handled
 separately (shared across all legs).
 """
@@ -33,7 +34,12 @@ GLOBAL_IDX = [0, 1, 2, 3, 4, 5, 6, 15, 16, 17, 18, 19, 20]
 
 LEG_QPOS_IDX = {"FL": (7, 8), "HL": (9, 10), "HR": (11, 12), "FR": (13, 14)}
 LEG_QVEL_IDX = {"FL": (21, 22), "HL": (23, 24), "HR": (25, 26), "FR": (27, 28)}
-LEG_ACTION_IDX = {"FL": (29, 30), "HL": (31, 32), "HR": (33, 34), "FR": (35, 36)}
+# Action order in the XML's <actuator> block (see envs/assets/quantruped.xml):
+# [hip_4/ankle_4, hip_1/ankle_1, hip_2/ankle_2, hip_3/ankle_3] = [FR, FL, HL, HR].
+ACTION_ORDER = ["FR", "FL", "HL", "HR"]
+
+# last_action is stored in actuator order, unlike qpos/qvel (joint order).
+LEG_ACTION_IDX = {leg: (29 + 2 * i, 30 + 2 * i) for i, leg in enumerate(ACTION_ORDER)}
 
 STATE_DIM = 37
 GOAL_DIM = 2
@@ -57,10 +63,6 @@ def _build_local_indices():
 # both ring neighbors (13 + 3 * 6 = 31 dims).
 LOCAL_STATE_INDICES = _build_local_indices()
 LOCAL_STATE_DIM = LOCAL_STATE_INDICES[LEG_NAMES[0]].shape[0]
-
-# Action order in the XML's <actuator> block (see envs/assets/quantruped.xml):
-# [hip_4/ankle_4, hip_1/ankle_1, hip_2/ankle_2, hip_3/ankle_3] = [FR, FL, HL, HR].
-ACTION_ORDER = ["FR", "FL", "HL", "HR"]
 
 # Index of each leg's (hip, knee) pair within the assembled 8-dim action vector
 # (distinct from LEG_ACTION_IDX, which indexes the last-action *feature* inside
